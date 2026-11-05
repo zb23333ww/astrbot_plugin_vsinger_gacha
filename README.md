@@ -63,6 +63,7 @@ python tools/prepare_cards.py --dest <AstrBot>/data/plugin_data/astrbot_plugin_v
 | `wallpaperDir` | 插件 `assets/wallpapers` | 背景图目录，随机取一张并模糊 |
 | `titleFont` | `wenkai.ttf` | 标题字体（`assets/fonts` 下的文件名） |
 | `bodyFont` | `yozai.ttf` | 正文字体 |
+| `forward` | `false` | 是否用合并转发（QQ 官方机器人不支持，保持 false） |
 
 内置字体：`wenkai.ttf`（霞鹜文楷）、`yozai.ttf`（悠哉字体）、
 `smiley.ttf`（得意黑）、`chill.otf`（寒蝉全圆体 Heavy），均为 OFL 授权子集。

@@ -314,6 +314,9 @@ class Renderer:
 class VsingerGacha(Star):
     """收藏集抽卡主类。"""
 
+    #: AstrBot 正常加载时会注入；独立插件宿主（如 astrbot-daemon）没有时用这个兜底
+    plugin_id = "zb23333ww/astrbot_plugin_vsinger_gacha"
+
     def __init__(self, context: Context, config: dict | None = None):
         super().__init__(context)
         self.conf = config or {}
@@ -332,6 +335,7 @@ class VsingerGacha(Star):
         fallback = ASSETS / "fonts" / "wenkai.ttf"
         self.fonts = Fonts(title_file, body_file, fallback)
         self.renderer = Renderer(self.fonts, ASSETS / "tags", Path(self.conf.get("wallpaperDir") or ASSETS / "wallpapers"))
+        self.forward = bool(self.conf.get("forward", False))
         self._lock = asyncio.Lock()
 
         logger.info(
@@ -551,12 +555,12 @@ class VsingerGacha(Star):
         for act, pool_map in groups.items():
             for pool, cards in pool_map.items():
                 cards.sort(key=lambda kv: -(float(kv[1].get("rate_pct") or 0)))
-                if current and budget + len(cards) > 36:
+                if current and budget + len(cards) > 60:
                     pages.append(current)
                     current, budget = [], 0
                 current.append((act, pool, cards))
                 budget += len(cards)
-                if budget >= 36:
+                if budget >= 60:
                     pages.append(current)
                     current, budget = [], 0
         if current:
@@ -691,13 +695,25 @@ class VsingerGacha(Star):
             if origin:
                 content.append(MsgImage.fromFileSystem(str(origin)))
             nodes.append(Node(content=content, name=name, uin=uin))
-        try:
-            if nodes:
+        if nodes and self.forward:
+            try:
                 yield self._forward(event, nodes)
-        except Exception:
-            logger.warning("[vsinger-gacha] 合并转发失败，改逐张发送", exc_info=True)
+            except Exception:
+                logger.warning("[vsinger-gacha] 合并转发失败，改逐张发送", exc_info=True)
+                for row in rows:
+                    p = self._thumb(row["key"])
+                    if p:
+                        yield event.image_result(str(p))
+        else:
+            # 不支持合并转发的平台（如 QQ 官方机器人）：逐张发
             for row in rows:
-                p = self._thumb(row["key"])
+                p = None
+                for suffix in (".jpg", ".png", ".webp"):
+                    candidate = self.cards_dir / f"{row['key']}{suffix}"
+                    if candidate.is_file():
+                        p = candidate
+                        break
+                p = p or self._thumb(row["key"])
                 if p:
                     yield event.image_result(str(p))
 
@@ -750,12 +766,15 @@ class VsingerGacha(Star):
                 lines.append(f"   {idx:02d}. {name}（{len(cards)} 张，已收 {got}）")
         lines += ["", "切换：/换池 序号（00 = 全部卡池）", "说明：/抽卡帮助"]
 
-        name, uin = "收藏集", self._self_uin(event)
-        nodes = [Node(content=[Plain("\n".join(lines[i:i + 18]))], name=name, uin=uin) for i in range(0, len(lines), 18)]
-        try:
-            yield self._forward(event, nodes)
-        except Exception:
-            yield event.plain_result("\n".join(lines))
+        if self.forward:
+            name, uin = "收藏集", self._self_uin(event)
+            nodes = [Node(content=[Plain("\n".join(lines[i:i + 18]))], name=name, uin=uin) for i in range(0, len(lines), 18)]
+            try:
+                yield self._forward(event, nodes)
+                return
+            except Exception:
+                logger.warning("[vsinger-gacha] 卡池合并转发失败，改文本", exc_info=True)
+        yield event.plain_result("\n".join(lines))
 
     @filter.command("换池")
     async def cmd_switch(self, event: AstrMessageEvent):
@@ -813,16 +832,20 @@ class VsingerGacha(Star):
         if len(pages) == 1:
             yield event.image_result(str(pages[0]))
             return
-        fname, uin = "收藏集", self._self_uin(event)
-        nodes = [
-            Node(content=[Plain(f"第 {i}/{len(pages)} 页"), MsgImage.fromFileSystem(str(p))], name=fname, uin=uin)
-            for i, p in enumerate(pages, 1)
-        ]
-        try:
-            yield self._forward(event, nodes)
-        except Exception:
-            for p in pages:
-                yield event.image_result(str(p))
+        if self.forward:
+            fname, uin = "收藏集", self._self_uin(event)
+            nodes = [
+                Node(content=[Plain(f"第 {i}/{len(pages)} 页"), MsgImage.fromFileSystem(str(p))], name=fname, uin=uin)
+                for i, p in enumerate(pages, 1)
+            ]
+            try:
+                yield self._forward(event, nodes)
+                return
+            except Exception:
+                logger.warning("[vsinger-gacha] 图鉴合并转发失败，改逐张发送", exc_info=True)
+        for i, p in enumerate(pages, 1):
+            yield event.plain_result(f"第 {i}/{len(pages)} 页")
+            yield event.image_result(str(p))
 
     @filter.command("获取卡")
     async def cmd_get_card(self, event: AstrMessageEvent):
