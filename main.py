@@ -259,6 +259,7 @@ class Renderer:
         owned: int = 1,
         laser: int = 0,
         size: tuple[int, int] = (200, 286),
+        show_count: bool = True,
     ):
         """画一张卡（圆角图 + 档位描边 + 角标 + 名称/概率）。"""
         x, y = box
@@ -290,14 +291,14 @@ class Renderer:
             th = int(tag.height * tw / tag.width)
             tile.alpha_composite(tag.resize((tw, th), Image.LANCZOS), (0, 0))
 
-        if laser and tier == 10:   # 镭射只属于普通档
+        if laser and tier == 10:
             holo = self._tag("tag_holo.png")
             if holo is not None:
                 hw = int(w * 0.36)
                 hh = int(holo.height * hw / holo.width)
                 tile.alpha_composite(holo.resize((hw, hh), Image.LANCZOS), ((w - hw) // 2, h - hh - 6))
 
-        if owned > 1:
+        if owned > 1 and show_count:
             badge_font = self.fonts.body(18)
             draw.rounded_rectangle((w - 58, 8, w - 8, 34), radius=10, fill=(31, 42, 58, 210))
             draw.text((w - 52, 10), f"×{owned}", font=badge_font, fill=(140, 255, 170))
@@ -309,6 +310,8 @@ class Renderer:
         meta_font = self.fonts.body(max(13, min(18, int(w * 0.068))))
         draw.text((x, y + h + 8), _fit(draw, entry.get("card_name", ""), name_font, w), font=name_font, fill=TEXT if owned else TEXT_DIM)
         meta = f"{TIER_NAME.get(tier, '普通')} {entry.get('rate_pct', '')}%"
+        if laser and tier == 10:
+            meta += " · 镭射款"
         draw.text((x, y + h + 40), _fit(draw, meta, meta_font, w), font=meta_font, fill=color if owned else TEXT_DIM)
 
     def footer(self, canvas: Image.Image, text: str):
@@ -539,9 +542,12 @@ class VsingerGacha(Star):
         for i, row in enumerate(rows):
             cx = x0 + (i % per_row) * (cw + gap)
             cy = py0 + 20 + (i // per_row) * (ch + label + gap)
+            art = self._laser_image(row["key"]) if row.get("laser") else None
+            art = art or self._thumb(row["key"])
             self.renderer.card(
-                canvas, (cx, cy), row["entry"], self._thumb(row["key"]),
+                canvas, (cx, cy), row["entry"], art,
                 owned=row["owned"], laser=row["laser"], size=(cw, ch),
+                show_count=False,
             )
 
         self.renderer.footer(canvas, "VSinger 收藏集 · 天依抽卡手账")
@@ -869,7 +875,11 @@ class VsingerGacha(Star):
         return outputs
 
     def _laser_image(self, card_hash: str) -> Path | None:
-        """把镭射标叠到原图上，返回临时图片路径。"""
+        """镭射款：优先返回 B 站原版镭射 JPG（cards/holo/<hash>.jpg）。"""
+        holo = self.cards_dir / "holo" / f"{card_hash}.jpg"
+        if holo.is_file():
+            return holo
+        # 没有原版镭射图时才回退：原图叠角标
         origin = None
         for suffix in (".jpg", ".png", ".webp"):
             candidate = self.cards_dir / f"{card_hash}{suffix}"
@@ -885,11 +895,11 @@ class VsingerGacha(Star):
         try:
             base = Image.open(origin).convert("RGBA")
             if tag.is_file():
-                holo = Image.open(tag).convert("RGBA")
+                holo_tag = Image.open(tag).convert("RGBA")
                 hw = int(base.width * 0.36)
-                hh = int(holo.height * hw / holo.width)
-                holo = holo.resize((hw, hh), Image.LANCZOS)
-                base.alpha_composite(holo, ((base.width - hw) // 2, base.height - hh - int(base.height * 0.02)))
+                hh = int(holo_tag.height * hw / holo_tag.width)
+                holo_tag = holo_tag.resize((hw, hh), Image.LANCZOS)
+                base.alpha_composite(holo_tag, ((base.width - hw) // 2, base.height - hh - int(base.height * 0.02)))
             base.convert("RGB").save(target, quality=90)
             return target
         except Exception:
@@ -979,6 +989,10 @@ class VsingerGacha(Star):
             if row["owned"] > 1:
                 caption += f" · ×{row['owned']}"
             content = [Plain(caption)]
+            if row.get("laser"):
+                laser_path = self._laser_image(row["key"])
+                if laser_path:
+                    origin = laser_path
             if origin:
                 content.append(MsgImage.fromFileSystem(str(origin)))
             nodes.append(Node(content=content, name=name, uin=uin))
@@ -1013,6 +1027,8 @@ class VsingerGacha(Star):
                     if candidate.is_file():
                         p = candidate
                         break
+                if row.get("laser"):
+                    p = self._laser_image(row["key"]) or p   # B 站原版镭射 JPG
                 p = p or self._thumb(row["key"])
                 if p:
                     yield event.image_result(str(p))
@@ -1024,8 +1040,7 @@ class VsingerGacha(Star):
                 continue
             comp = self._video_component(row["key"])
             if comp is not None:
-                # OneBot 要求 video 必须单独成链
-                yield event.plain_result(f"🎬 {row['entry'].get('card_name', '')} · {TIER_NAME.get(row['tier'], '')}")
+                # OneBot 要求 video 必须单独成链；直接发，不额外发文字
                 yield event.chain_result([comp])
 
     def _pool_table(self) -> list[tuple[int, str, str]]:
@@ -1210,7 +1225,6 @@ class VsingerGacha(Star):
         )
         video = self._video_component(key)
         if video is not None:
-            yield event.plain_result(f"🎬 {entry.get('card_name', '')} · 动态卡")
             yield event.chain_result([video])
 
     @filter.command("摸鱼")
