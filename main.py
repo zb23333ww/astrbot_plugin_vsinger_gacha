@@ -10,8 +10,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import random
+import time
 import re
 import uuid
 from pathlib import Path
@@ -176,19 +178,21 @@ class Renderer:
         draw.rounded_rectangle(box, radius=radius, fill=fill, outline=outline, width=width)
 
     def panel(self, canvas: Image.Image, box, radius: int = RADIUS, alpha: int = 200):
-        """白色半透明圆角面板（带柔和阴影）。"""
-        x0, y0, x1, y1 = box
-        shadow = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+        """白色半透明圆角面板（阴影只画在面板局部，避免整画布分配）。"""
+        x0, y0, x1, y1 = (int(v) for v in box)
+        w, h = max(2, x1 - x0), max(2, y1 - y0)
+        pad = 24
+        shadow = Image.new("RGBA", (w + pad * 2, h + pad * 2), (0, 0, 0, 0))
         ImageDraw.Draw(shadow).rounded_rectangle(
-            (x0, y0 + 4, x1, y1 + 4), radius=radius, fill=(60, 90, 130, 40)
+            (pad, pad + 4, pad + w, pad + h + 4), radius=radius, fill=(60, 90, 130, 40)
         )
-        shadow = shadow.filter(ImageFilter.GaussianBlur(10))
-        canvas.alpha_composite(shadow)
-        layer = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+        shadow = shadow.filter(ImageFilter.GaussianBlur(8))
+        canvas.alpha_composite(shadow, (x0 - pad, y0 - pad))
+        layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         ImageDraw.Draw(layer).rounded_rectangle(
-            box, radius=radius, fill=(255, 255, 255, alpha), outline=(120, 160, 210, 70), width=1
+            (0, 0, w - 1, h - 1), radius=radius, fill=(255, 255, 255, alpha), outline=(120, 160, 210, 70), width=1
         )
-        canvas.alpha_composite(layer)
+        canvas.alpha_composite(layer, (x0, y0))
 
     def note(self, draw: ImageDraw.ImageDraw, cx: int, cy: int, radius: int):
         """圆形徽标里的音符（椭圆头 + 竖杆 + 旗）。"""
@@ -213,19 +217,22 @@ class Renderer:
         draw = ImageDraw.Draw(canvas)
         width = canvas.width
         pad = 40
-        radius = max(24, min(44, int(width * 0.012)))
+        radius = max(30, min(200, int(34 * max(1.0, min(2.6, width / 1600)))))
         cx, cy = pad + radius, 34 + radius
         self.note(draw, cx, cy, radius)
 
-        title_size = max(34, int(radius * 1.15))
+        title_size = max(34, int(radius * 1.0))
         title_font = self.fonts.title(title_size)
-        sub_font = self.fonts.body(max(18, int(title_size * 0.55)))
-        draw.text((cx + radius + 18, 30), _fit(draw, title, title_font, width - (cx + radius + 18) - 380), font=title_font, fill=TEXT)
+        sub_font = self.fonts.body(max(18, int(title_size * 0.5)))
+        reserved = (min(760, int(width * 0.17)) + 24) if badge else 24
+        draw.text((cx + radius + 18, 30),
+                  _fit(draw, title, title_font, width - (cx + radius + 18) - reserved),
+                  font=title_font, fill=TEXT)
         draw.text((cx + radius + 18, 30 + title_size + 10), subtitle, font=sub_font, fill=TEXT_SUB)
 
-        bottom = 34 + radius * 2 + 24
+        bottom = 34 + radius * 2 + 28
         if badge:
-            bw = max(170, min(420, int(width * 0.14)))
+            bw = max(180, min(760, int(width * 0.17)))
             bh = int(bw * 0.5)
             bx = width - pad - bw
             by = 30
@@ -236,11 +243,11 @@ class Renderer:
             if badge_sub:
                 draw.text((bx + bw * 0.1, by + bh * 0.6), badge_sub, font=self.fonts.body(int(bh * 0.22)), fill=TEXT_SUB)
             pbar = (bx + bw * 0.08, by + bh - 16, bx + bw * 0.92, by + bh - 10)
-            draw.rounded_rectangle(pbar, radius=3, fill=(74, 144, 217, 40))
+            draw.rounded_rectangle(pbar, radius=3, fill=(214, 228, 244))
             if progress > 0:
                 p_x1 = pbar[0] + (pbar[2] - pbar[0]) * max(0.0, min(1.0, progress))
                 draw.rounded_rectangle((pbar[0], pbar[1], p_x1, pbar[3]), radius=3, fill=ACCENT)
-            bottom = max(bottom, by + bh + 18)
+            bottom = max(bottom, by + bh + 24)
         return bottom
 
     def card(
@@ -298,11 +305,11 @@ class Renderer:
         canvas.alpha_composite(tile, (x, y))
 
         draw = ImageDraw.Draw(canvas)
-        name_font = self.fonts.body(20)
-        meta_font = self.fonts.body(16)
+        name_font = self.fonts.body(max(15, min(24, int(w * 0.085))))
+        meta_font = self.fonts.body(max(13, min(18, int(w * 0.068))))
         draw.text((x, y + h + 8), _fit(draw, entry.get("card_name", ""), name_font, w), font=name_font, fill=TEXT if owned else TEXT_DIM)
         meta = f"{TIER_NAME.get(tier, '普通')} {entry.get('rate_pct', '')}%"
-        draw.text((x, y + h + 34), _fit(draw, meta, meta_font, w), font=meta_font, fill=color if owned else TEXT_DIM)
+        draw.text((x, y + h + 40), _fit(draw, meta, meta_font, w), font=meta_font, fill=color if owned else TEXT_DIM)
 
     def footer(self, canvas: Image.Image, text: str):
         draw = ImageDraw.Draw(canvas)
@@ -335,7 +342,9 @@ class VsingerGacha(Star):
         fallback = ASSETS / "fonts" / "wenkai.ttf"
         self.fonts = Fonts(title_file, body_file, fallback)
         self.renderer = Renderer(self.fonts, ASSETS / "tags", Path(self.conf.get("wallpaperDir") or ASSETS / "wallpapers"))
-        self.forward = bool(self.conf.get("forward", False))
+        self.forward = bool(self.conf.get("forward", True))   # OneBot 默认合并转发；官方平台走单独分支
+        # QQ 官方机器人被动回复：同一个 msg_id 最多 5 条
+        self.max_messages = max(1, int(self.conf.get("maxMessages", 5) or 5))
         self._lock = asyncio.Lock()
 
         logger.info(
@@ -382,6 +391,7 @@ class VsingerGacha(Star):
             "laser": data.get("laser") if isinstance(data.get("laser"), dict) else {},
             "pity": data.get("pity") if isinstance(data.get("pity"), dict) else {},
             "pools": data.get("pools") if isinstance(data.get("pools"), dict) else {},
+            "minigames": data.get("minigames") if isinstance(data.get("minigames"), dict) else {},
         }
 
     async def _save_state(self, state: dict) -> None:
@@ -412,6 +422,15 @@ class VsingerGacha(Star):
         return int(data["points"])
 
     # ------------------------------------------------------ 选择 / 抽卡
+
+    def _is_official(self, event: AstrMessageEvent) -> bool:
+        """是否 QQ 官方平台（被动回复最多 5 条，需要压缩）。"""
+        try:
+            name = str(event.get_platform_name() or "")
+        except Exception:
+            name = ""
+        origin = str(getattr(event, "unified_msg_origin", "") or "")
+        return "qq_official" in name or "qq_official" in origin
 
     @staticmethod
     def _chat_key(event: AstrMessageEvent) -> str:
@@ -500,17 +519,17 @@ class VsingerGacha(Star):
         rows_n = (n + per_row - 1) // per_row
         cw = 300 if n == 1 else 200
         ch = int(cw * 1.43)
-        gap, label, pad = 20, 62, 44
+        gap, label, pad = 20, 78, 44
         width = max(720, pad * 2 + per_row * cw + (per_row - 1) * gap + 40)
         head = 140
-        height = head + rows_n * (ch + label + gap) + pad
+        height = head + rows_n * (ch + label + gap) + pad + 70
 
         canvas = self.renderer.background(width, height).convert("RGBA")
         head_bottom = self.renderer.header(canvas, title, f"共 {n} 张 ｜ 抽卡结果", badge, badge_sub, progress)
 
         px0, py0 = pad, head_bottom - 10
         px1 = width - pad
-        py1 = py0 + rows_n * (ch + label + gap) + 10 - gap
+        py1 = py0 + rows_n * (ch + label + gap) + 50
         self.renderer.panel(canvas, (px0, py0, px1, py1), radius=28, alpha=190)
         draw = ImageDraw.Draw(canvas)
         draw.text((pad, head_bottom - 4), "", font=self.fonts.body(12))
@@ -530,7 +549,65 @@ class VsingerGacha(Star):
         canvas.convert("RGB").save(out, quality=90)
         return out
 
-    def _render_handbook(self, uid: str, name: str, owned: dict, laser: dict, wallpaper_note: str = "") -> list[Path]:
+
+    def _render_handbook_flat(self, uid: str, name: str, owned: dict, laser: dict,
+                              cols: int = 24, rows_per_page: int = 5) -> list[Path]:
+        """扁平横图图鉴：不分池，纯网格（官方机器人 5 条消息内装完）。"""
+        ordered: list[tuple[str, dict]] = []
+        for act_id, act_name in ACT_NAMES.items():
+            act_cards = [
+                (k, e) for k, e in self.catalog.items()
+                if str(e.get("act_id")) == act_id
+                and any(p and p not in EXCLUDE_POOLS for p in (e.get("pool_list") or []))
+            ]
+            act_cards.sort(key=lambda kv: -(float(kv[1].get("rate_pct") or 0)))
+            ordered.extend(act_cards)
+        # 兜底：不在 ACT_NAMES 里的卡
+        seen = {k for k, _ in ordered}
+        ordered.extend((k, e) for k, e in self.catalog.items() if k not in seen)
+
+        if cols <= 16:
+            cw, gap, label, pad = 240, 20, 70, 40
+        else:
+            cw, gap, label, pad = 170, 16, 56, 36
+        ch = int(cw * 1.43)
+        width = pad * 2 + cols * cw + (cols - 1) * gap
+        per_page = cols * rows_per_page
+        total = len(ordered)
+        collected = sum(1 for k in self.catalog if owned.get(k))
+        duplicates = sum(max(0, int(v) - 1) for v in owned.values())
+        pages: list[Path] = []
+        for page_index in range(0, total, per_page):
+            chunk = ordered[page_index:page_index + per_page]
+            rows = (len(chunk) + cols - 1) // cols
+            height = 150 + rows * (ch + label) + 60
+            canvas = self.renderer.background(width, height).convert("RGBA")
+            head_bottom = self.renderer.header(
+                canvas,
+                "VSinger 收藏集 · 我的图鉴",
+                f"{name}　已收集 {collected}/{total}　重复 {duplicates} 张",
+                badge=f"{collected}/{total}",
+                badge_sub="收集进度",
+                progress=collected / total if total else 0,
+            )
+            y0 = max(head_bottom, 150)
+            for i, (key, entry) in enumerate(chunk):
+                cx = pad + (i % cols) * (cw + gap)
+                cy = y0 + (i // cols) * (ch + label)
+                self.renderer.card(
+                    canvas, (cx, cy), entry, self._thumb(key),
+                    owned=int(owned.get(key, 0) or 0),
+                    laser=int(laser.get(key, 0) or 0),
+                    size=(cw, ch),
+                )
+            self.renderer.footer(canvas, f"VSinger 收藏集 · 图鉴 {page_index // per_page + 1}/{max(1, (total + per_page - 1) // per_page)}")
+            out = self.cache_dir / f"handbook_{uuid.uuid4().hex}.jpg"
+            canvas.convert("RGB").save(out, quality=88)
+            pages.append(out)
+        return pages
+
+    def _render_handbook(self, uid: str, name: str, owned: dict, laser: dict, wallpaper_note: str = "",
+                         page_cards: int = 60, cols: int = 6) -> list[Path]:
         """按系列/池分组渲染图鉴，超长自动分页。"""
         groups: dict[str, dict[str, list[tuple[str, dict]]]] = {}
         for key, entry in self.catalog.items():
@@ -540,10 +617,14 @@ class VsingerGacha(Star):
             act = ACT_NAMES.get(str(entry.get("act_id") or ""), f"act {entry.get('act_id')}")
             groups.setdefault(act, {}).setdefault(pools[0], []).append((key, entry))
 
-        cw, ch = 240, 343
-        gap, label = 24, 74
-        cols = 6
-        pad = 48
+        # 列数多 → 横图（官方机器人一次只有 5 条消息，宽图能少分页）
+        if cols <= 8:
+            cw, gap, label, pad = 180, 14, 66, 40
+        elif cols <= 16:
+            cw, gap, label, pad = 200, 18, 64, 40
+        else:
+            cw, gap, label, pad = 170, 16, 56, 36
+        ch = int(cw * 1.43)
         width = pad * 2 + cols * cw + (cols - 1) * gap
         block_head = 52
         series_h = 58
@@ -555,12 +636,12 @@ class VsingerGacha(Star):
         for act, pool_map in groups.items():
             for pool, cards in pool_map.items():
                 cards.sort(key=lambda kv: -(float(kv[1].get("rate_pct") or 0)))
-                if current and budget + len(cards) > 60:
+                if current and budget + len(cards) > page_cards:
                     pages.append(current)
                     current, budget = [], 0
                 current.append((act, pool, cards))
                 budget += len(cards)
-                if budget >= 60:
+                if budget >= page_cards:
                     pages.append(current)
                     current, budget = [], 0
         if current:
@@ -624,6 +705,212 @@ class VsingerGacha(Star):
     def _forward(self, event: AstrMessageEvent, nodes: list[Node]):
         return event.chain_result([Nodes(nodes=nodes)])
 
+    @staticmethod
+    def _strip_at_prefix(event: AstrMessageEvent) -> None:
+        """把消息开头的 [At:xxx] 去掉（官方群 @ 机器人后再发指令）。"""
+        import re as _re
+        text = str(getattr(event, "message_str", "") or "")
+        cleaned = _re.sub(r"^(?:\s*\[At:[^\]]+\])+\s*", "", text)
+        if cleaned != text:
+            event.message_str = cleaned
+            try:
+                event.is_at_or_wake_command = True
+            except Exception:
+                pass
+
+    @filter.regex(r"^\s*\[At:[^\]]+\]\s*/?(?:抽卡|卡池|换池|图鉴|获取卡|查积分|摸鱼|蹭饭|每日红包|打工状态|打工)")
+    async def cmd_at_dispatch(self, event: AstrMessageEvent):
+        """兜底入口：只处理「[At:机器人] /指令」，处理完立刻 stop_event 防重复。"""
+        original = str(getattr(event, "message_str", "") or "")
+        self._strip_at_prefix(event)
+        if original == str(getattr(event, "message_str", "") or ""):
+            return
+        text = str(getattr(event, "message_str", "") or "").strip()
+        if not text.startswith("/"):
+            text = "/" + text.lstrip("/")
+        try:
+            event.stop_event()
+        except Exception:
+            pass
+        for prefix, handler in (
+            ("/抽卡帮助", self.cmd_help),
+            ("/抽卡", self.cmd_draw),
+            ("/卡池", self.cmd_pools),
+            ("/换池", self.cmd_switch),
+            ("/图鉴", self.cmd_handbook),
+            ("/获取卡", self.cmd_get_card),
+            ("/查积分", self.cmd_query_points),
+            ("/摸鱼", self.cmd_moyu),
+            ("/蹭饭", self.cmd_eat),
+            ("/每日红包", self.cmd_bonus),
+            ("/打工状态", self.cmd_work_status),
+            ("/打工", self.cmd_work),
+        ):
+            if text.startswith(prefix):
+                async for result in handler(event):
+                    yield result
+                return
+
+    def _render_handbook_packed(self, uid: str, name: str, owned: dict, laser: dict,
+                                ncol: int = 3, per_row: int = 6, page_cards: int = 90,
+                                card_w: int = 160) -> list[Path]:
+        """原版横版布局：奖池块打包成 ncol 个竖直列并排，并分页（每页 page_cards 张）。"""
+        cw, gap, label, pad = card_w, 12, 58, 36
+        ch = int(cw * 1.43)
+        col_w = per_row * cw + (per_row - 1) * gap
+        col_gap = 20
+        scale = max(1.0, cw / 140)
+        series_h = int(52 * scale)
+        pool_h = int(46 * scale)
+        series_font = max(24, int(cw * 0.22))
+        pool_font = max(20, int(cw * 0.16))
+        count_font = max(18, int(cw * 0.12))
+
+        # 1) 组装块
+        blocks: list[dict] = []
+        for act_id, act_name in ACT_NAMES.items():
+            act_cards = [
+                (k, e) for k, e in self.catalog.items()
+                if str(e.get("act_id")) == act_id
+                and any(p and p not in EXCLUDE_POOLS for p in (e.get("pool_list") or []))
+            ]
+            if not act_cards:
+                continue
+            pools: dict[str, list[tuple[str, dict]]] = {}
+            for k, e in act_cards:
+                pool = next((p for p in (e.get("pool_list") or []) if p and p not in EXCLUDE_POOLS), "其他")
+                pools.setdefault(pool, []).append((k, e))
+            first = True
+            for pool, cards in pools.items():
+                cards.sort(key=lambda kv: -(float(kv[1].get("rate_pct") or 0)))
+                rows = (len(cards) + per_row - 1) // per_row
+                blocks.append({
+                    "act": act_name, "series": first, "pool": pool, "cards": cards,
+                    "h": (series_h if first else 0) + pool_h + rows * (ch + label) + 8,
+                })
+                first = False
+
+        # 2) 按卡数分页（块不拆）
+        pages: list[list[dict]] = []
+        cur: list[dict] = []
+        cur_cards = 0
+        for b in blocks:
+            if cur and cur_cards + len(b["cards"]) > page_cards:
+                pages.append(cur)
+                cur, cur_cards = [], 0
+            cur.append(b)
+            cur_cards += len(b["cards"])
+        if cur:
+            pages.append(cur)
+
+        collected = sum(1 for k in self.catalog if owned.get(k))
+        total = len(self.catalog)
+        duplicates = sum(max(0, int(v) - 1) for v in owned.values())
+        outputs: list[Path] = []
+        for page_index, page_blocks in enumerate(pages, 1):
+            # 3) 页内打包成 ncol 列
+            total_h = sum(b["h"] for b in page_blocks)
+            target = max(400, total_h / max(1, ncol))
+            cols: list[list[dict]] = []
+            col: list[dict] = []
+            col_h = 0
+            for b in page_blocks:
+                if col and col_h + b["h"] > target and len(cols) < ncol - 1:
+                    cols.append(col)
+                    col, col_h = [], 0
+                col.append(b)
+                col_h += b["h"]
+            if col:
+                cols.append(col)
+
+            width = pad * 2 + len(cols) * col_w + (len(cols) - 1) * col_gap
+            height = 150 + max(sum(b["h"] for b in c) for c in cols) + 60
+            canvas = self.renderer.background(width, height).convert("RGBA")
+            head_bottom = self.renderer.header(
+                canvas,
+                "VSinger 收藏集 · 我的图鉴",
+                f"{name}　已收集 {collected}/{total}　重复 {duplicates} 张"
+                + (f"　第 {page_index}/{len(pages)} 页" if len(pages) > 1 else ""),
+                badge=f"{collected}/{total}",
+                badge_sub="收集进度",
+                progress=collected / max(1, total),
+            )
+            y_top = max(head_bottom, 150)
+            for ci, col in enumerate(cols):
+                x = pad + ci * (col_w + col_gap)
+                y = y_top
+                for b in col:
+                    if b["series"]:
+                        self.renderer.panel(canvas, (x, y, x + col_w, y + series_h - 6), radius=14, alpha=235)
+                        d = ImageDraw.Draw(canvas)
+                        d.rectangle((x + 12, y + 12, x + 18, y + series_h - 16), fill=ACCENT)
+                        d.text((x + 28, y + max(4, (series_h - series_font) // 2 - 4)), b["act"], font=self.fonts.title(series_font), fill=TEXT)
+                        y += series_h
+                    got = sum(1 for k, _ in b["cards"] if owned.get(k))
+                    self.renderer.panel(canvas, (x, y + 1, x + col_w, y + pool_h - 8), radius=12, alpha=225)
+                    d = ImageDraw.Draw(canvas)
+                    d.text((x + 12, y + max(3, (pool_h - pool_font) // 2 - 6)), _fit(d, b["pool"], self.fonts.body(pool_font), col_w - 150), font=self.fonts.body(pool_font), fill=ACCENT)
+                    d.text((x + col_w - 110, y + max(3, (pool_h - count_font) // 2 - 5)), f"{got}/{len(b['cards'])}", font=self.fonts.body(count_font), fill=TEXT_SUB)
+                    y += pool_h
+                    for i, (key, entry) in enumerate(b["cards"]):
+                        cx = x + (i % per_row) * (cw + gap)
+                        cy = y + (i // per_row) * (ch + label)
+                        self.renderer.card(
+                            canvas, (cx, cy), entry, self._thumb(key),
+                            owned=int(owned.get(key, 0) or 0),
+                            laser=int(laser.get(key, 0) or 0),
+                            size=(cw, ch),
+                        )
+                    y += ((len(b["cards"]) + per_row - 1) // per_row) * (ch + label) + 8
+            self.renderer.footer(canvas, f"VSinger 收藏集 · 图鉴 {page_index}/{len(pages)}")
+            out = self.cache_dir / f"handbook_{uuid.uuid4().hex}.jpg"
+            canvas.convert("RGB").save(out, quality=85)
+            outputs.append(out)
+        return outputs
+
+    def _laser_image(self, card_hash: str) -> Path | None:
+        """把镭射标叠到原图上，返回临时图片路径。"""
+        origin = None
+        for suffix in (".jpg", ".png", ".webp"):
+            candidate = self.cards_dir / f"{card_hash}{suffix}"
+            if candidate.is_file():
+                origin = candidate
+                break
+        if origin is None:
+            return None
+        target = self.cache_dir / f"laser_{card_hash}.jpg"
+        if target.is_file():
+            return target
+        tag = ASSETS / "tags" / "tag_holo.png"
+        try:
+            base = Image.open(origin).convert("RGBA")
+            if tag.is_file():
+                holo = Image.open(tag).convert("RGBA")
+                hw = int(base.width * 0.36)
+                hh = int(holo.height * hw / holo.width)
+                holo = holo.resize((hw, hh), Image.LANCZOS)
+                base.alpha_composite(holo, ((base.width - hw) // 2, base.height - hh - int(base.height * 0.02)))
+            base.convert("RGB").save(target, quality=90)
+            return target
+        except Exception:
+            logger.warning("[vsinger-gacha] 镭射图合成失败：%s", card_hash, exc_info=True)
+            return None
+
+    def _video_component(self, card_hash: str):
+        """返回动态卡视频组件（优先容器路径），没有视频返回 None。"""
+        video = self.videos_dir / f"{card_hash}.mp4"
+        if not video.is_file():
+            return None
+        try:
+            if Path("/root/snowluma/data/videos").exists():
+                container = f"/app/data/videos/{video.name}"
+                return Video(container, path=container)
+            b64 = base64.b64encode(video.read_bytes()).decode()
+            return Video.fromBase64(b64)
+        except Exception:
+            logger.warning("[vsinger-gacha] 视频组件构造失败：%s", video.name, exc_info=True)
+            return None
+
     @filter.command("抽卡")
     async def cmd_draw(self, event: AstrMessageEvent):
         """抽卡，默认 1 张，最多 10 张。"""
@@ -663,9 +950,9 @@ class VsingerGacha(Star):
                 })
             await self._save_state(state)
 
-        title = f"{event.get_sender_name() or '你'} 抽了 {count} 张（-{need} 分，剩 {left}）"
+        title = f"{event.get_sender_name() or '你'} 抽了 {count} 张 | -{need} 分"
         try:
-            image = self._render_result(rows, title, str(left), "当前积分", 0.0)
+            image = await asyncio.to_thread(self._render_result, rows, title, str(left), "当前积分", 0.0)
         except Exception:
             logger.error("[vsinger-gacha] 结果图渲染失败", exc_info=True)
             image = None
@@ -695,6 +982,19 @@ class VsingerGacha(Star):
             if origin:
                 content.append(MsgImage.fromFileSystem(str(origin)))
             nodes.append(Node(content=content, name=name, uin=uin))
+        if self._is_official(event):
+            # 官方被动回复有 5 条上限：结果图已经包含全部信息，原图不再逐张发
+            videos_left = self.max_messages - 1
+            for row in rows:
+                video = self.videos_dir / f"{row['key']}.mp4"
+                if video.is_file() and videos_left > 0:
+                    videos_left -= 1
+                    yield event.chain_result([
+                        Plain(f"🎬 {row['entry'].get('card_name', '')} · {TIER_NAME.get(row['tier'], '')}"),
+                        Video.fromFileSystem(str(video)),
+                    ])
+            return
+
         if nodes and self.forward:
             try:
                 yield self._forward(event, nodes)
@@ -717,14 +1017,16 @@ class VsingerGacha(Star):
                 if p:
                     yield event.image_result(str(p))
 
-        # 动态卡：只要视频文件存在就单独补发（不限制档位）
+        # 动态卡：只要视频文件存在就单独补发（base64，避免容器读不到宿主路径）
         for row in rows:
             video = self.videos_dir / f"{row['key']}.mp4"
-            if video.is_file():
-                yield event.chain_result([
-                    Plain(f"🎬 {row['entry'].get('card_name', '')} · {TIER_NAME.get(row['tier'], '')}"),
-                    Video.fromFileSystem(str(video)),
-                ])
+            if not video.is_file():
+                continue
+            comp = self._video_component(row["key"])
+            if comp is not None:
+                # OneBot 要求 video 必须单独成链
+                yield event.plain_result(f"🎬 {row['entry'].get('card_name', '')} · {TIER_NAME.get(row['tier'], '')}")
+                yield event.chain_result([comp])
 
     def _pool_table(self) -> list[tuple[int, str, str]]:
         """生成 00 全部 / 系列 / 池 的三级编号表：(序号, 类型, 名称)。"""
@@ -820,8 +1122,23 @@ class VsingerGacha(Star):
         owned = state["owned"].get(uid, {})
         laser = state["laser"].get(uid, {})
         name = event.get_sender_name() or uid
+        page_cards = 60
+        cols = 6
+        if self._is_official(event):
+            # 官方：原版横版（3 个竖直列并排），一张图装完全部卡
+            pages = await asyncio.to_thread(self._render_handbook_packed, uid, name, owned, laser, 3, 6, 90, 160)
+            for p in pages[: self.max_messages]:
+                yield event.image_result(str(p))
+            return
         try:
-            pages = self._render_handbook(uid, name, owned, laser)
+            pages = await asyncio.to_thread(self._render_handbook, uid, name, owned, laser, "", page_cards, cols)
+            if self._is_official(event):
+                # 块切分会让页数略多于估算值；超过 5 条时自动放大每页张数重排
+                for _ in range(4):
+                    if len(pages) <= self.max_messages:
+                        break
+                    page_cards = int(page_cards * 1.3) + 10
+                    pages = await asyncio.to_thread(self._render_handbook, uid, name, owned, laser, "", page_cards, cols)
         except Exception:
             logger.error("[vsinger-gacha] 图鉴渲染失败", exc_info=True)
             yield event.plain_result("图鉴渲染失败，查看日志获取详情")
@@ -843,6 +1160,13 @@ class VsingerGacha(Star):
                 return
             except Exception:
                 logger.warning("[vsinger-gacha] 图鉴合并转发失败，改逐张发送", exc_info=True)
+        if self._is_official(event):
+            limit = self.max_messages
+            for p in pages[:limit]:
+                yield event.image_result(str(p))
+            if len(pages) > limit:
+                yield event.plain_result(f"图鉴较长，已合并为 {limit} 页发送")
+            return
         for i, p in enumerate(pages, 1):
             yield event.plain_result(f"第 {i}/{len(pages)} 页")
             yield event.image_result(str(p))
@@ -870,9 +1194,9 @@ class VsingerGacha(Star):
         key, entry = hits[0]
         path = None
         for suffix in (".jpg", ".png", ".webp"):
-            p = self.cards_dir / f"{key}{suffix}"
-            if p.is_file():
-                path = p
+            candidate = self.cards_dir / f"{key}{suffix}"
+            if candidate.is_file():
+                path = candidate
                 break
         if path:
             yield event.image_result(str(path))
@@ -883,6 +1207,109 @@ class VsingerGacha(Star):
         tier = int(entry.get("card_scarcity") or 10)
         yield event.plain_result(
             f"🎴 {entry.get('card_name', '')}\n档位：{TIER_NAME.get(tier, '普通')} ｜ 概率：{entry.get('rate_pct')}% ｜ 你拥有 ×{owned.get(key, 0)}"
+        )
+        video = self._video_component(key)
+        if video is not None:
+            yield event.plain_result(f"🎬 {entry.get('card_name', '')} · 动态卡")
+            yield event.chain_result([video])
+
+    @filter.command("摸鱼")
+    async def cmd_moyu(self, event: AstrMessageEvent):
+        """摸鱼：10 分钟一次，+1~4 分。"""
+        uid = event.get_sender_id()
+        now = int(time.time())
+        async with self._lock:
+            state = await self._load_state()
+            mg = state.setdefault("minigames", {})
+            rec = mg.setdefault(uid, {})
+            last = int(rec.get("moyu", 0) or 0)
+            if now - last < 600:
+                wait = 600 - (now - last)
+                yield event.plain_result(f"🐟 刚摸过了，{wait//60} 分 {wait%60} 秒后再来")
+                return
+            gain = random.randint(1, 4)
+            rec["moyu"] = now
+            await self._save_state(state)
+            left = await self._add_points(uid, gain)
+        yield event.plain_result(f"🐟 摸了会鱼：+{gain} 分（当前 {left}）")
+
+    @filter.command("蹭饭")
+    async def cmd_eat(self, event: AstrMessageEvent):
+        """蹭饭：30 分钟一次，+3~8 分。"""
+        uid = event.get_sender_id()
+        now = int(time.time())
+        async with self._lock:
+            state = await self._load_state()
+            mg = state.setdefault("minigames", {})
+            rec = mg.setdefault(uid, {})
+            last = int(rec.get("eat", 0) or 0)
+            if now - last < 1800:
+                wait = 1800 - (now - last)
+                yield event.plain_result(f"🍚 刚蹭过饭了，{wait//60} 分钟后再来")
+                return
+            gain = random.randint(3, 8)
+            rec["eat"] = now
+            await self._save_state(state)
+            left = await self._add_points(uid, gain)
+        yield event.plain_result(f"🍚 蹭到一顿饭：+{gain} 分（当前 {left}）")
+
+    @filter.command("每日红包")
+    async def cmd_bonus(self, event: AstrMessageEvent):
+        """每日红包：每天一次，+5~20 分。"""
+        uid = event.get_sender_id()
+        today = time.strftime("%Y-%m-%d")
+        async with self._lock:
+            state = await self._load_state()
+            mg = state.setdefault("minigames", {})
+            rec = mg.setdefault(uid, {})
+            if rec.get("bonus_day") == today:
+                yield event.plain_result("🧧 今天已经领过红包啦，明天再来")
+                return
+            gain = random.randint(5, 20)
+            rec["bonus_day"] = today
+            await self._save_state(state)
+            left = await self._add_points(uid, gain)
+        yield event.plain_result(f"🧧 每日红包：+{gain} 分（当前 {left}）")
+
+    @filter.command("打工")
+    async def cmd_work(self, event: AstrMessageEvent):
+        """打工：开始/结算（12 小时最多 200 分）。"""
+        uid = event.get_sender_id()
+        now = int(time.time())
+        async with self._lock:
+            state = await self._load_state()
+            mg = state.setdefault("minigames", {})
+            rec = mg.setdefault(uid, {})
+            start = int(rec.get("work_start", 0) or 0)
+            if not start:
+                rec["work_start"] = now
+                await self._save_state(state)
+                yield event.plain_result("💼 开始打工：12 小时最多 200 分，再发 /打工 结算并停止")
+                return
+            elapsed = min(12 * 3600, max(0, now - start))
+            gain = min(200, int(elapsed / (12 * 3600) * 200))
+            rec["work_start"] = 0
+            await self._save_state(state)
+            if gain <= 0:
+                yield event.plain_result("💼 结算：还不到 1 分，下次多挂一会儿吧")
+                return
+            left = await self._add_points(uid, gain)
+        yield event.plain_result(f"💼 结算：+{gain} 分（工时 {elapsed//3600} 小时 {elapsed%3600//60} 分，当前 {left}）")
+
+    @filter.command("打工状态")
+    async def cmd_work_status(self, event: AstrMessageEvent):
+        """查看打工进度。"""
+        uid = event.get_sender_id()
+        state = await self._load_state()
+        rec = (state.get("minigames") or {}).setdefault(uid, {})
+        start = int(rec.get("work_start", 0) or 0)
+        if not start:
+            yield event.plain_result("💼 没在打工：发 /打工 开始")
+            return
+        elapsed = min(12 * 3600, max(0, int(time.time()) - start))
+        gain = min(200, int(elapsed / (12 * 3600) * 200))
+        yield event.plain_result(
+            f"💼 已打工 {elapsed//3600} 小时 {elapsed%3600//60} 分，预计 {gain} 分（上限 200）"
         )
 
     @filter.command("抽卡帮助")
@@ -900,7 +1327,10 @@ class VsingerGacha(Star):
             "/换池 01          整个系列",
             "/换池 12          单个奖池",
             "/图鉴             我的图鉴长图（合并消息）",
-            "/获取卡 <卡名>    取出已拥有的卡",
+            "/获取卡 <卡名>    取出已拥有的卡（动态卡附 mp4）",
+            "/打卡 /查积分     打卡赚积分（azuresignin）",
+            "/摸鱼 /蹭饭 /每日红包   小额积分",
+            "/打工 /打工状态   挂机攒分（12h 上限 200）",
             "",
             "【规则】",
             "  · 收集进度全局共用；卡池选择每个群独立",
