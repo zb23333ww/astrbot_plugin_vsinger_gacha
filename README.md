@@ -89,3 +89,10 @@ python tools/prepare_cards.py --dest <AstrBot>/data/plugin_data/astrbot_plugin_v
 ## 许可
 
 代码 MIT。
+
+---
+
+## 适配 / 部署
+
+完整环境要求、素材目录布局、视频/平台差异见 [docs/ADAPTATION.md](docs/ADAPTATION.md)。
+素材检查：`python3 tools/ensure_assets.py <插件 data 目录>`
