@@ -1,5 +1,8 @@
 # astrbot_plugin_vsinger_gacha
 
+> Koishi 版：[koishi-plugin-vsinger-gacha](https://github.com/zb23333ww/koishi-plugin-vsinger-gacha)
+> —— 同一套抽卡/图鉴/镭射规则，支持 npm 安装。
+
 B 站「VSinger 收藏集」抽卡插件的 AstrBot 移植版：按官方流通概率抽卡，
 全部卡池 / 系列 / 单池三级范围，大隐藏与小隐藏保底、档内未拥有优先、
 普通卡镭射款。抽卡结果和图鉴由 **Pillow 本地渲染**（浅色玻璃手账风，
