@@ -1164,8 +1164,10 @@ class VsingerGacha(Star):
         #   【兜底】Python 渲染失败 → Node(旧 Koishi CLI) → 内置渲染 ✓
         if not self._is_official(event):
             try:
-                import tempfile
-                from .handbook_render import render_handbook as _py_handbook
+                import tempfile, importlib
+                from . import handbook_render as _hb_mod
+                importlib.reload(_hb_mod)   # ★ 每次渲染前重载，改渲染器不用重启 AstrBot
+                _py_handbook = _hb_mod.render_handbook
                 out_dir = tempfile.mkdtemp(prefix='handbook_py_')
                 thumbs = [str(ASSETS / 'thumbs'), '/root/handbook-cards-hi']
                 wall = '/root/bg-landscape' if Path('/root/bg-landscape').is_dir() else str(ASSETS / 'wallpapers')
