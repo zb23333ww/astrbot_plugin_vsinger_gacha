@@ -325,12 +325,31 @@ def render_handbook(catalog: dict, act_names: dict, uid: str, name: str,
                         pill = Image.new('RGBA', (40, 22), (0, 0, 0, 0))
                         pd = ImageDraw.Draw(pill)
                         pd.rounded_rectangle((0, 0, 39, 21), radius=8, fill=(31, 42, 58, 209))
-                        f_cnt = ImageFont.truetype(str(font_body), 14)
-                        pd.text((3, 2), f'×{n_owned}', font=f_cnt, fill='#8cffaa')
+                        # ★ 悠哉字体没有 × 字形 → 用 DejaVu；没有就退 xN
+                        cnt_text = f'×{n_owned}'
+                        f_cnt = None
+                        for cand in ('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+                                     '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'):
+                            if Path(cand).is_file():
+                                try:
+                                    f_cnt = ImageFont.truetype(cand, 14)
+                                    break
+                                except Exception:
+                                    f_cnt = None
+                        if f_cnt is None:
+                            cnt_text = f'x{n_owned}'
+                            f_cnt = ImageFont.truetype(str(font_body), 14)
+                        try:
+                            if f_cnt.getlength(cnt_text) > 34:
+                                cnt_text = f'x{n_owned}'
+                                f_cnt = ImageFont.truetype(str(font_body), 13)
+                        except Exception:
+                            pass
+                        pd.text((4, 2), cnt_text, font=f_cnt, fill='#8cffaa')
                         canvas.paste(pill, (cx + CW - 46, cy + 6), pill)
                     nm = _fit(draw, v.get('card_name') or '', f_name, CW)
                     draw.text((cx + (CW - draw.textlength(nm, font=f_name)) / 2, cy + CH + 8), nm,
-                              font=f_name, fill=COLOR['text'], stroke_width=1, stroke_fill=COLOR['text'])
+                              font=f_name, fill=COLOR['text'])
                     rt = float(v.get('rate_pct') or 0)
                     meta = f'{TIER[tier]["name"]} {rt:g}%'
                     f_meta2 = ImageFont.truetype(str(font_body), 13)
