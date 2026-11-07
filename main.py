@@ -734,28 +734,14 @@ class VsingerGacha(Star):
         text = str(getattr(event, "message_str", "") or "").strip()
         if not text.startswith("/"):
             text = "/" + text.lstrip("/")
-        try:
-            event.stop_event()
-        except Exception:
-            pass
-        for prefix, handler in (
-            ("/抽卡帮助", self.cmd_help),
-            ("/抽卡", self.cmd_draw),
-            ("/卡池", self.cmd_pools),
-            ("/换池", self.cmd_switch),
-            ("/图鉴", self.cmd_handbook),
-            ("/获取卡", self.cmd_get_card),
-            ("/查积分", self.cmd_query_points),
-            ("/摸鱼", self.cmd_moyu),
-            ("/蹭饭", self.cmd_eat),
-            ("/每日红包", self.cmd_bonus),
-            ("/打工状态", self.cmd_work_status),
-            ("/打工", self.cmd_work),
-        ):
-            if text.startswith(prefix):
-                async for result in handler(event):
-                    yield result
-                return
+        # ★★★ 2026-11-07【修复双抽卡】✓
+        #   【用户反馈】"机器人还在走双抽奖插件（同一个 /抽卡 回两次）"
+        #   【根因】@兜底入口在剥离前缀后【手动调用了一遍 handler】，
+        #          而主指令管道也会正常执行 → 同一个指令跑两次 ✗
+        #   【修法】这里只负责剥掉 [At:xxx] 前缀并标记为可唤醒指令，
+        #          交给 AstrBot 的指令管道统一执行（不再手动分发）✓
+        #   注意：不要 yield，也不要 stop_event（否则会把主管道拦掉）。
+        return
 
     def _render_handbook_packed(self, uid: str, name: str, owned: dict, laser: dict,
                                 ncol: int = 3, per_row: int = 6, page_cards: int = 90,
@@ -1171,33 +1157,23 @@ class VsingerGacha(Star):
         name = event.get_sender_name() or uid
         page_cards = 60
         cols = 6
-        # ★★★ 2026-11-07【AstrBot 复用 Koishi 版横版图鉴渲染器】✓
-        #   【用户反馈】"这个版本还是旧的，跟当时调整过的有区别，而且没走合并转发"
-        #   【根因】AstrBot 自己的横版是旧布局 ✗ 用户要的是 Koishi v1.7.1 那套自适应横版 ✓
-        #   【修法】非官方平台调用 /root/handbook_cli.js（复用 koishi 插件的 handbook.renderPacked），
-        #          渲染失败再回退本插件原有渲染器 ✓
+        # ★★★ 2026-11-07【图鉴改为纯 Python(Pillow) 渲染】✓
+        #   【用户需求】"JS 转 Python，彻底去掉 Node 依赖"
+        #   【实现】handbook_render.py：16:9 自适应列数、系列/奖池分块、
+        #          高清缩略图、角标/镭射/×N、页眉进度徽章（字号自适应）、背景 cover ✓
+        #   【兜底】Python 渲染失败 → Node(旧 Koishi CLI) → 内置渲染 ✓
         if not self._is_official(event):
             try:
-                import subprocess, tempfile, json as _json
-                out_dir = tempfile.mkdtemp(prefix='handbook_')
-                payload = _json.dumps({
-                    'uid': str(uid),
-                    'name': name or str(uid),
-                    'owned': owned,
-                    'laser': laser,
-                    'outDir': out_dir,
-                })
-                proc = await asyncio.to_thread(
-                    subprocess.run,
-                    ['node', '/root/handbook_cli.js'],
-                    input=payload.encode('utf-8'),
-                    capture_output=True,
-                    timeout=180,
+                import tempfile
+                from .handbook_render import render_handbook as _py_handbook
+                out_dir = tempfile.mkdtemp(prefix='handbook_py_')
+                thumbs = [str(ASSETS / 'thumbs'), '/root/handbook-cards-hi']
+                wall = '/root/bg-landscape' if Path('/root/bg-landscape').is_dir() else str(ASSETS / 'wallpapers')
+                files = await asyncio.to_thread(
+                    _py_handbook, self.catalog, ACT_NAMES, str(uid), name or str(uid),
+                    owned, laser, out_dir, str(ASSETS), thumbs, wall,
                 )
-                out = (proc.stdout or b'').decode('utf-8', 'ignore').strip().splitlines()
-                res = _json.loads(out[-1]) if out else {'ok': False}
-                files = [str(p) for p in (res.get('files') or []) if p]
-                if res.get('ok') and files:
+                if files:
                     if len(files) == 1:
                         yield event.image_result(files[0])
                         return
@@ -1213,8 +1189,9 @@ class VsingerGacha(Star):
                         yield event.image_result(p)
                     return
             except Exception:
-                logger.warning('[vsinger-gacha] Koishi 图鉴渲染失败，回退内置渲染', exc_info=True)
+                logger.warning('[vsinger-gacha] Python 图鉴渲染失败，尝试 Node 回退', exc_info=True)
 
+        # —— 下面保留 Node / 内置渲染作为兜底 ——
         if self._is_official(event):
             pages = await asyncio.to_thread(self._render_handbook_packed, uid, name, owned, laser, 3, 6, 90, 160)
             for p in pages[: self.max_messages]:
