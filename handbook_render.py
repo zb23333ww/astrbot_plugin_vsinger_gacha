@@ -86,12 +86,14 @@ def _panel(draw, box, radius, fill, outline=None):
     draw.rounded_rectangle(box, radius=radius, fill=fill, outline=outline or COLOR['panelBorder'], width=1)
 
 
-def _note_icon(size: int) -> Image.Image:
+def _note_icon(R: int) -> Image.Image:
+    """半径 R 的蓝色圆 + 白色音符（k=R*0.52，与 Koishi 一致）"""
+    size = R * 2
     im = Image.new('RGBA', (size, size), (0, 0, 0, 0))
     d = ImageDraw.Draw(im)
     d.ellipse((0, 0, size - 1, size - 1), fill=COLOR['accent'])
-    k = size * 0.52
-    cx = cy = size / 2
+    k = R * 0.52
+    cx = cy = R
     hx, hy = cx - k * 0.34, cy + k * 0.52
     d.ellipse((hx - k * 0.42, hy - k * 0.32, hx + k * 0.42, hy + k * 0.32), fill='white')
     sx = hx + k * 0.36
@@ -223,7 +225,7 @@ def render_handbook(catalog: dict, act_names: dict, uid: str, name: str,
 
         # 页眉
         R = max(30, min(180, round(34 * max(1.0, min(2.6, W / 1600)))))
-        canvas.paste(_note_icon(R * 2), (PAD, 26), _note_icon(R * 2))
+        canvas.paste(_note_icon(R), (PAD, 26), _note_icon(R))
         head_y = 26
         title_size = max(30, R)
         f_title_big = ImageFont.truetype(str(font_title), title_size)
@@ -239,7 +241,7 @@ def render_handbook(catalog: dict, act_names: dict, uid: str, name: str,
                   font=f_sub, fill=COLOR['textSub'])
         # 徽章
         bx = PAD + (W - PAD * 2) - badge_w
-        _panel(draw, (bx, head_y - 4, bx + badge_w, head_y - 4 + badge_h), 14, (255, 255, 255, 242))
+        _panel(draw, (bx, head_y - 4, bx + badge_w, head_y - 4 + badge_h), max(14, round(badge_h * 0.22)), (255, 255, 255, 242))
         badge_text = f'{collected}/{total}'
         fs = round(badge_h * 0.46)
         while fs > 12 and draw.textlength(badge_text, font=ImageFont.truetype(str(font_body), fs)) > badge_w * 0.8:
@@ -288,30 +290,51 @@ def render_handbook(catalog: dict, act_names: dict, uid: str, name: str,
                         card = Image.new('RGB', (CW, CH), (226, 233, 242))
                     card = _rounded(card, 10)
                     canvas.paste(card, (cx, cy), card)
-                    draw.rounded_rectangle((cx, cy, cx + CW - 1, cy + CH - 1), radius=10, outline=(120, 150, 190, 64), width=1)
                     tier = _tier(v)
+                    tc = TIER[tier]['color']
+                    owned_flag = bool(owned.get(h))
+                    # 描边：档位色（未拥有更细更淡）
+                    draw.rounded_rectangle((cx + 1, cy + 1, cx + CW - 2, cy + CH - 2), radius=9,
+                                           outline=tc if owned_flag else (150, 165, 185), width=3 if owned_flag else 2)
                     tag = TIER[tier].get('tag')
                     if tag and tag in tag_imgs:
+                        # ★ 角标：宽 = 卡宽 0.52，贴左上角并裁进圆角
                         t = tag_imgs[tag]
-                        tw = 44
+                        tw = round(CW * 0.52)
                         th = round(t.height * tw / t.width)
-                        canvas.paste(t.resize((tw, th), Image.LANCZOS), (cx + CW - tw - 4, cy + 4), t.resize((tw, th), Image.LANCZOS))
-                    if laser.get(h) and holo.is_file():
+                        tagimg = t.resize((tw, th), Image.LANCZOS)
+                        layer = Image.new('RGBA', (CW, CH), (0, 0, 0, 0))
+                        layer.paste(tagimg, (0, 0), tagimg)
+                        mask = Image.new('L', (CW, CH), 0)
+                        ImageDraw.Draw(mask).rounded_rectangle((0, 0, CW - 1, CH - 1), radius=10, fill=255)
+                        layer.putalpha(Image.composite(layer.getchannel('A'), Image.new('L', (CW, CH), 0), mask))
+                        canvas.paste(layer, (cx, cy), layer)
+                    if laser.get(h) and tier == 10 and holo.is_file():
+                        # ★ 镭射：只对普通档，宽 = 卡宽 0.36，居中贴底
                         try:
                             hi = Image.open(holo).convert('RGBA')
-                            hw = 44; hh = round(hi.height * hw / hi.width)
-                            canvas.paste(hi.resize((hw, hh), Image.LANCZOS), (cx + 4, cy + 4), hi.resize((hw, hh), Image.LANCZOS))
+                            hw = round(CW * 0.36)
+                            hh = round(hi.height * hw / hi.width)
+                            himg = hi.resize((hw, hh), Image.LANCZOS)
+                            canvas.paste(himg, (cx + (CW - hw) // 2, cy + CH - hh - 6), himg)
                         except Exception:
                             pass
                     n_owned = int(owned.get(h) or 0)
                     if n_owned > 1:
-                        draw.text((cx + CW - 8 - draw.textlength(f'×{n_owned}', font=f_meta), cy + CH - 22),
-                                  f'×{n_owned}', font=f_meta, fill='#ffffff')
+                        # ★ 数量：右上角圆角胶囊 40x22
+                        pill = Image.new('RGBA', (40, 22), (0, 0, 0, 0))
+                        pd = ImageDraw.Draw(pill)
+                        pd.rounded_rectangle((0, 0, 39, 21), radius=8, fill=(31, 42, 58, 209))
+                        f_cnt = ImageFont.truetype(str(font_body), 14)
+                        pd.text((3, 2), f'×{n_owned}', font=f_cnt, fill='#8cffaa')
+                        canvas.paste(pill, (cx + CW - 46, cy + 6), pill)
                     nm = _fit(draw, v.get('card_name') or '', f_name, CW)
-                    draw.text((cx + (CW - draw.textlength(nm, font=f_name)) / 2, cy + CH + 8), nm, font=f_name, fill=COLOR['text'])
+                    draw.text((cx + (CW - draw.textlength(nm, font=f_name)) / 2, cy + CH + 8), nm,
+                              font=f_name, fill=COLOR['text'], stroke_width=1, stroke_fill=COLOR['text'])
                     rt = float(v.get('rate_pct') or 0)
-                    meta = f'{TIER[tier]["name"]} · {rt:g}%'
-                    draw.text((cx + (CW - draw.textlength(meta, font=f_meta)) / 2, cy + CH + 32), meta, font=f_meta, fill=COLOR['textDim'])
+                    meta = f'{TIER[tier]["name"]} {rt:g}%'
+                    f_meta2 = ImageFont.truetype(str(font_body), 13)
+                    draw.text((cx + (CW - draw.textlength(meta, font=f_meta2)) / 2, cy + CH + 40), meta, font=f_meta2, fill=tc)
                 y += math.ceil(len(b['list']) / PER_ROW) * (CH + LABEL) + 8
 
         draw.text((PAD, H - 26), f'VSinger 收藏集 · 图鉴 {pi}/{len(pages)}', font=ImageFont.truetype(str(font_body), 14), fill=COLOR['textDim'])
