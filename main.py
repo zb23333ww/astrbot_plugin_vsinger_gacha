@@ -1039,7 +1039,39 @@ class VsingerGacha(Star):
             if not video.is_file():
                 continue
             comp = self._video_component(row["key"])
-            if comp is not None:
+            if comp is None:
+                continue
+            # ★★★ 2026-11-07【视频改回 qqbot 的原始段发法】✓
+            #   【用户反馈】"之前 qqbot 抽到 21MB 动图发得很快，现在发不完"
+            #   【根因】组件的 Video 段经 AstrBot 转换后，SnowLuma 侧上传可能被截断 ✗
+            #   【修法】直接 bot.call_action 发原始 {type:'video', data:{file: 容器路径}}，
+            #          与 qqbot 旧实现一致；失败再退回组件链 ✓
+            sent = False
+            try:
+                bot = getattr(event, "bot", None)
+                gid = event.get_group_id()
+                uid = event.get_sender_id()
+                container = f"/app/data/videos/{row['key']}.mp4"
+                if bot is not None:
+                    for _ in range(2):
+                        try:
+                            if gid:
+                                await bot.call_action("send_group_msg", {
+                                    "group_id": int(gid),
+                                    "message": [{"type": "video", "data": {"file": container}}],
+                                })
+                            else:
+                                await bot.call_action("send_private_msg", {
+                                    "user_id": int(uid),
+                                    "message": [{"type": "video", "data": {"file": container}}],
+                                })
+                            sent = True
+                            break
+                        except Exception:
+                            logger.warning("[vsinger-gacha] 原始视频段发送失败，重试", exc_info=True)
+            except Exception:
+                logger.warning("[vsinger-gacha] 原始视频段发送异常", exc_info=True)
+            if not sent:
                 # OneBot 要求 video 必须单独成链；直接发，不额外发文字
                 yield event.chain_result([comp])
 
@@ -1139,8 +1171,51 @@ class VsingerGacha(Star):
         name = event.get_sender_name() or uid
         page_cards = 60
         cols = 6
+        # ★★★ 2026-11-07【AstrBot 复用 Koishi 版横版图鉴渲染器】✓
+        #   【用户反馈】"这个版本还是旧的，跟当时调整过的有区别，而且没走合并转发"
+        #   【根因】AstrBot 自己的横版是旧布局 ✗ 用户要的是 Koishi v1.7.1 那套自适应横版 ✓
+        #   【修法】非官方平台调用 /root/handbook_cli.js（复用 koishi 插件的 handbook.renderPacked），
+        #          渲染失败再回退本插件原有渲染器 ✓
+        if not self._is_official(event):
+            try:
+                import subprocess, tempfile, json as _json
+                out_dir = tempfile.mkdtemp(prefix='handbook_')
+                payload = _json.dumps({
+                    'uid': str(uid),
+                    'name': name or str(uid),
+                    'owned': owned,
+                    'laser': laser,
+                    'outDir': out_dir,
+                })
+                proc = await asyncio.to_thread(
+                    subprocess.run,
+                    ['node', '/root/handbook_cli.js'],
+                    input=payload.encode('utf-8'),
+                    capture_output=True,
+                    timeout=180,
+                )
+                out = (proc.stdout or b'').decode('utf-8', 'ignore').strip().splitlines()
+                res = _json.loads(out[-1]) if out else {'ok': False}
+                files = [str(p) for p in (res.get('files') or []) if p]
+                if res.get('ok') and files:
+                    if len(files) == 1:
+                        yield event.image_result(files[0])
+                        return
+                    if self.forward and len(files) > 1:
+                        nodes = [
+                            Node(content=[Plain(f'第 {i}/{len(files)} 页'), MsgImage.fromFileSystem(p)],
+                                 name='收藏集', uin=self._self_uin(event))
+                            for i, p in enumerate(files, 1)
+                        ]
+                        yield self._forward(event, nodes)
+                        return
+                    for p in files[: self.max_messages]:
+                        yield event.image_result(p)
+                    return
+            except Exception:
+                logger.warning('[vsinger-gacha] Koishi 图鉴渲染失败，回退内置渲染', exc_info=True)
+
         if self._is_official(event):
-            # 官方：原版横版（3 个竖直列并排），一张图装完全部卡
             pages = await asyncio.to_thread(self._render_handbook_packed, uid, name, owned, laser, 3, 6, 90, 160)
             for p in pages[: self.max_messages]:
                 yield event.image_result(str(p))
